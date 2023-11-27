@@ -211,32 +211,32 @@ public class LearningLessonServiceImpl extends ServiceImpl<LearningLessonMapper,
 
     @Override
     public LearningPlanPageVO queryMyPlans(PageQuery query) {
-        //1 . 获取当前登录用户id
+        //1. 获取当前用户
         Long userId = UserContext.getUser();
-        //2. todo: 查询积分
-        //3.查询本周学习计划总数据 learning_lesson 条件： UserId status = 1 in（0， 1） plans_status = 1, 查询sum（week_freq）
+        //2. 查询课表加起来的章节总数 learningLesson  条件 userId， status in （0，1）， plan_status = 1
         QueryWrapper<LearningLesson> wrapper = new QueryWrapper<>();
         wrapper.select("sum(week_freq) as plansTotal");
-        wrapper.eq("user_id", userId);
-        wrapper.eq("plan_status", PlanStatus.PLAN_RUNNING);
-        wrapper.in("STATUS",LessonStatus.NOT_BEGIN, LessonStatus.LEARNING);
+        wrapper.eq("user_id",userId);
+        wrapper.eq("plan_status",PlanStatus.PLAN_RUNNING);
+        wrapper.in("status", LessonStatus.NOT_BEGIN, LessonStatus.LEARNING);
         Map<String, Object> map = this.getMap(wrapper);
-        // {plansTotal: 7}
         Integer plansTotal = 0;
-        if(map != null && map.get("plansTotal") != null) {
-            plansTotal= Integer.valueOf(map.get("plansTotal").toString());
+        if(map!=null && map.get("plansTotal") != null) {
+            plansTotal = Integer.valueOf(map.get("plansTotal").toString());
         }
 
-        //4. 查询本周已学习的计划总数据
-        //
+        //3. 根据本周起始时间查询所学课程的学习记录 learningRecord 条件 userId finished = 1 finish_time between begin and end
         LocalDate now = LocalDate.now();
-        LocalDateTime weekBeginTime = DateUtils.getWeekBeginTime(now);  //本周开始时间
-        LocalDateTime weekEndTime = DateUtils.getWeekEndTime(now);      //本周结束时间
-        Integer weekFinishedPlanNum = recordMapper.selectCount(Wrappers.<LearningRecord>lambdaQuery()
-                .eq(LearningRecord::getUserId, userId)
-                .eq(LearningRecord::getFinished, true)
-                .between(LearningRecord::getFinishTime, weekBeginTime, weekEndTime));
-        //5. 查询课表数据 learning_lesson  条件userid status in (0,1) plan_status = 1 分页
+        LocalDateTime weekBeginTime = DateUtils.getWeekBeginTime(now);
+        LocalDateTime weekEndTime = DateUtils.getWeekEndTime(now);
+        QueryWrapper<LearningRecord> rWrapper = new QueryWrapper<>();
+        rWrapper.eq("user_id", userId);
+        rWrapper.eq("finished", true);
+        rWrapper.between("finish_time", weekBeginTime, weekEndTime);
+        Integer learned = recordMapper.selectCount(rWrapper);
+
+
+        //4. 查询课表数据 learningLesson 条件 userId status in（0，1） plan_status = 1 分页
         Page<LearningLesson> page = this.lambdaQuery()
                 .eq(LearningLesson::getUserId, userId)
                 .in(LearningLesson::getStatus, LessonStatus.NOT_BEGIN, LessonStatus.LEARNING)
@@ -248,32 +248,27 @@ public class LearningLessonServiceImpl extends ServiceImpl<LearningLessonMapper,
             vo.setTotal(0L);
             vo.setPages(0L);
             vo.setList(CollUtils.emptyList());
-            return vo;
         }
-        //6. 远程调用课程服务 获取课程信息
+        //5. 远程调用课程服务 获取课程信息 {课程id： 课程DTO， 课程id： 课程DTO }
         Set<Long> courseIds = records.stream().map(LearningLesson::getCourseId).collect(Collectors.toSet());
-        List<CourseSimpleInfoDTO> courseInfos = courseClient.getSimpleInfoList(courseIds);
-        if(CollUtils.isEmpty(courseInfos)) {
+        List<CourseSimpleInfoDTO> cInfos = courseClient.getSimpleInfoList(courseIds);
+        if(CollUtils.isEmpty(cInfos)) {
             throw new BizIllegalException("课程不存在");
         }
-        // 讲cinfo list结构转换成map 《课程id  CourseInfo》
-        Map<Long, CourseSimpleInfoDTO> cInfosMap = courseInfos.stream().collect(Collectors.toMap(CourseSimpleInfoDTO::getId, c -> c));
-        //7. 查询学习记录表learning_record 本周 当前用户下 每一门课下 已学习的小节数量
-        //select lesson_id, count(*) from learning_record where user_id = 2 and finished=1 and finish_time between ? and ? group by lesson_id
-
-        QueryWrapper<LearningRecord> rWrapper = new QueryWrapper<>();
-        rWrapper.select("lesson_id lessonId, count(*) as userId");
-        rWrapper.eq("user_id", userId);
-        rWrapper.eq("finished", true);
-        rWrapper.between("finish_time",weekBeginTime, weekEndTime);
+        Map<Long, CourseSimpleInfoDTO> cInfosMap = cInfos.stream().collect(Collectors.toMap(CourseSimpleInfoDTO::getId, c -> c));
+        //7. 查询学习记录表 本周 当前用户下 每一门课已学习的小节数量
+        //select lesson_id, count(*) from learning_record where user_id = 2 and finished = 1
+        //and finish_time between begin and end
+        //group by lesson_id
+        rWrapper.select("lesson_id as lessonId", "count(*) as userId");
         rWrapper.groupBy("lesson_id");
         List<LearningRecord> learningRecords = recordMapper.selectList(rWrapper);
-        //userId存储的是对应的课程 本周已经学习的小节数
-        Map<Long, Long> courseWeekFinfishNumMap = learningRecords.stream().collect(Collectors.toMap(LearningRecord::getLessonId, c -> c.getUserId()));
+        //{课程id： 已完成小节数}
+        Map<Long, Long> courseWeekFinishNumMap = learningRecords.stream().collect(Collectors.toMap(LearningRecord::getLessonId, c -> c.getUserId()));
         //8. 封装vo返回
         LearningPlanPageVO vo = new LearningPlanPageVO();
         vo.setWeekTotalPlan(plansTotal);
-        vo.setWeekFinished(weekFinishedPlanNum);
+        vo.setWeekFinished(learned);
         List<LearningPlanVO> voList = new ArrayList<>();
         for (LearningLesson record : records) {
             LearningPlanVO planVO = BeanUtils.copyBean(record, LearningPlanVO.class);
@@ -282,13 +277,7 @@ public class LearningLessonServiceImpl extends ServiceImpl<LearningLessonMapper,
                 planVO.setCourseName(infoDTO.getName());
                 planVO.setSections(infoDTO.getSectionNum());
             }
-//            Long aLong = courseWeekFinfishNumMap.get(record.getId());
-//            if(aLong!=null) {
-//                planVO.setWeekLearnedSections(aLong.intValue());        //本周已学习章数
-//            } else {
-//                planVO.setWeekLearnedSections(0);
-//            }
-            planVO.setWeekLearnedSections(courseWeekFinfishNumMap.getOrDefault(record.getId(),0L).intValue());     //本周已学习章节数
+            planVO.setWeekLearnedSections(courseWeekFinishNumMap.getOrDefault(record.getId(),0L).intValue());
             voList.add(planVO);
         }
         vo.setList(voList);
