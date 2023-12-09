@@ -17,7 +17,7 @@ import java.util.List;
  **/
 @Data
 @ApiModel(description = "课程详细信息，包含课程、目录、教师")
-public class CourseFullInfoDTO {
+public class  CourseFullInfoDTO {
     @ApiModelProperty("课程id")
     private Long id;
     @ApiModelProperty("课程名称")

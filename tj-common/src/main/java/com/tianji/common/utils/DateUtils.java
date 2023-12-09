@@ -39,6 +39,9 @@ public class DateUtils extends LocalDateTimeUtil {
     public static final DateTimeFormatter SIGN_DATE_SUFFIX_FORMATTER =
             DateTimeFormatter.ofPattern(":yyyyMM");
 
+    public static final DateTimeFormatter POINTS_BOARD_SUFFIX_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyyMM");
+
     public static final String TIME_ZONE_8 = "GMT+8";
 
     /**
@@ -114,6 +117,10 @@ public class DateUtils extends LocalDateTimeUtil {
     }
 
     public static LocalDateTime getMonthEndTime(LocalDate date) {
+        if(date.getMonthValue() == 12) {
+            return LocalDate.of(date.getYear() + 1, 1, 1)
+                    .minusDays(1).atTime(LocalTime.MAX);
+        }
         return LocalDate.of(date.getYear(), date.getMonthValue() + 1, 1)
                 .minusDays(1).atTime(LocalTime.MAX);
     }
